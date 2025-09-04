@@ -28,9 +28,8 @@ async function downloadVideo(url, outputPath) {
     responseType: 'stream',
     headers: {
       'User -Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-      // Add more headers here if needed
     },
-    timeout: 30000, // 30 seconds timeout
+    timeout: 30000,
   });
 
   response.data.pipe(writer);
@@ -129,8 +128,10 @@ async function main() {
 
     const post = jsonData[postUrl];
     if (post.results_number > 0 && post.url_list.length > 0) {
+      // Use the first video URL from url_list
       const videoUrl = post.url_list[0];
-      const caption = post.post_info.caption || '';
+      // Use caption from post_info
+      const caption = post.post_info?.caption || '';
 
       try {
         console.log(`Downloading video from ${videoUrl}`);
