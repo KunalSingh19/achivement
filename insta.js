@@ -1,11 +1,18 @@
 const { IgApiClient } = require('instagram-private-api');
 const axios = require('axios');
 const fs = require('fs');
+const fsp = fs.promises;
 const path = require('path');
+const ffmpeg = require('fluent-ffmpeg');
+const ffprobeStatic = require('ffprobe-static');
+
+// Set ffprobe path from ffprobe-static
+ffmpeg.setFfprobePath(ffprobeStatic.path);
 
 const MAX_UPLOADS = 15;
 const HISTORY_FILE = path.resolve(__dirname, 'history.json');
 const TEMP_VIDEO_PATH = path.resolve(__dirname, 'temp_video.mp4');
+const TEMP_THUMBNAIL_PATH = path.resolve(__dirname, 'temp_thumbnail.jpg');
 const SESSION_FILE_PATH = path.resolve(__dirname, 'ig_session.json');
 
 function loadHistory() {
@@ -31,9 +38,9 @@ async function downloadVideo(url, outputPath) {
   response.data.pipe(writer);
 
   return new Promise((resolve, reject) => {
-    writer.on('finish', () => {
+    writer.on('finish', async () => {
       try {
-        const stats = fs.statSync(outputPath);
+        const stats = await fsp.stat(outputPath);
         console.log(`Download finished. File size: ${stats.size} bytes`);
         if (stats.size === 0) {
           reject(new Error('Downloaded video file is empty'));
@@ -48,28 +55,55 @@ async function downloadVideo(url, outputPath) {
   });
 }
 
+function generateThumbnail(videoPath, thumbnailPath) {
+  return new Promise((resolve, reject) => {
+    ffmpeg(videoPath)
+      .on('end', () => {
+        console.log('Thumbnail generated:', thumbnailPath);
+        resolve();
+      })
+      .on('error', (err) => {
+        reject(new Error(`Failed to generate thumbnail: ${err.message}`));
+      })
+      // Take a screenshot at 1 second into the video
+      .screenshots({
+        count: 1,
+        folder: path.dirname(thumbnailPath),
+        filename: path.basename(thumbnailPath),
+        size: '640x?'
+      });
+  });
+}
+
 async function uploadVideo(ig, videoPath, caption) {
-  const videoBuffer = fs.readFileSync(videoPath);
-  console.log(`Read video buffer length: ${videoBuffer.length} bytes`);
-  if (!videoBuffer || videoBuffer.length === 0) {
-    throw new Error('Video buffer is empty');
-  }
-  return await ig.publish.video({
+  // Generate thumbnail first
+  await generateThumbnail(videoPath, TEMP_THUMBNAIL_PATH);
+
+  // Read video and thumbnail files into buffers
+  const videoBuffer = await fsp.readFile(videoPath);
+  const thumbnailBuffer = await fsp.readFile(TEMP_THUMBNAIL_PATH);
+
+  console.log(`Uploading video with thumbnail...`);
+
+  const result = await ig.publish.video({
     video: videoBuffer,
+    coverImage: thumbnailBuffer,
     caption,
   });
+
+  return result;
 }
 
 async function saveSession(ig) {
   const serialized = await ig.state.serialize();
-  fs.writeFileSync(SESSION_FILE_PATH, JSON.stringify(serialized, null, 2));
+  await fsp.writeFile(SESSION_FILE_PATH, JSON.stringify(serialized, null, 2));
 }
 
 async function loadSession(ig) {
   if (!fs.existsSync(SESSION_FILE_PATH)) {
     return false;
   }
-  const savedSession = JSON.parse(fs.readFileSync(SESSION_FILE_PATH, 'utf-8'));
+  const savedSession = JSON.parse(await fsp.readFile(SESSION_FILE_PATH, 'utf-8'));
   await ig.state.deserialize(savedSession);
   return true;
 }
@@ -84,7 +118,7 @@ async function main() {
     console.error('reelsData.json file not found!');
     process.exit(1);
   }
-  const jsonData = JSON.parse(fs.readFileSync(jsonFilePath, 'utf-8'));
+  const jsonData = JSON.parse(await fsp.readFile(jsonFilePath, 'utf-8'));
 
   const username = process.env.IG_USERNAME || '';
   const password = process.env.IG_PASSWORD || '';
@@ -153,8 +187,16 @@ async function main() {
       } catch (err) {
         console.error(`Error processing video ${postUrl}:`, err);
       } finally {
-        if (fs.existsSync(TEMP_VIDEO_PATH)) {
-          fs.unlinkSync(TEMP_VIDEO_PATH);
+        // Clean up temp files after upload completes
+        for (const filePath of [TEMP_VIDEO_PATH, TEMP_THUMBNAIL_PATH]) {
+          try {
+            await fsp.unlink(filePath);
+            console.log(`Deleted temporary file: ${filePath}`);
+          } catch (err) {
+            if (err.code !== 'ENOENT') {
+              console.error(`Error deleting temp file ${filePath}:`, err);
+            }
+          }
         }
       }
     } else {
