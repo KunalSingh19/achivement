@@ -20,30 +20,48 @@ function saveHistory(history) {
 }
 
 async function downloadVideo(url, outputPath) {
-  const writer = fs.createWriteStream(outputPath);
+  console.log(`Starting download from: ${url}`);
   const response = await axios({
-    url,
     method: 'GET',
+    url: url,
     responseType: 'stream',
   });
+
+  const writer = fs.createWriteStream(outputPath);
   response.data.pipe(writer);
+
   return new Promise((resolve, reject) => {
-    writer.on('finish', resolve);
+    writer.on('finish', () => {
+      try {
+        const stats = fs.statSync(outputPath);
+        console.log(`Download finished. File size: ${stats.size} bytes`);
+        if (stats.size === 0) {
+          reject(new Error('Downloaded video file is empty'));
+        } else {
+          resolve();
+        }
+      } catch (err) {
+        reject(err);
+      }
+    });
     writer.on('error', reject);
   });
 }
 
 async function uploadVideo(ig, videoPath, caption) {
   const videoBuffer = fs.readFileSync(videoPath);
+  console.log(`Read video buffer length: ${videoBuffer.length} bytes`);
+  if (!videoBuffer || videoBuffer.length === 0) {
+    throw new Error('Video buffer is empty');
+  }
   return await ig.publish.video({
-    video: videoBuffer, // Pass raw Buffer directly
+    video: videoBuffer,
     caption,
   });
 }
 
 async function saveSession(ig) {
   const serialized = await ig.state.serialize();
-  // cookies are needed for session, so keep them
   fs.writeFileSync(SESSION_FILE_PATH, JSON.stringify(serialized, null, 2));
 }
 
